@@ -12,6 +12,7 @@ define postgresql::server::role(
   $connection_limit = '-1',
   $username         = $title,
   $connect_settings = $postgresql::server::default_connect_settings,
+  $rds              = false,
 ) {
   $psql_user  = $postgresql::server::user
   $psql_group = $postgresql::server::group
@@ -40,7 +41,14 @@ define postgresql::server::role(
   $inherit_sql     = $inherit     ? { true => 'INHERIT',     default => 'NOINHERIT' }
   $createrole_sql  = $createrole  ? { true => 'CREATEROLE',  default => 'NOCREATEROLE' }
   $createdb_sql    = $createdb    ? { true => 'CREATEDB',    default => 'NOCREATEDB' }
-  $superuser_sql   = $superuser   ? { true => 'SUPERUSER',   default => 'NOSUPERUSER' }
+  if $rds {
+    # In RDS you can't create superuser and instead grant the `rds_superuser` role
+    $superuser_sql   = 'NOSUPERUSER'
+  } else {
+    # enter puppet code
+    $superuser_sql   = $superuser   ? { true => 'SUPERUSER',   default => 'NOSUPERUSER' }
+  }
+
   $replication_sql = $replication ? { true => 'REPLICATION', default => '' }
   if ($password_hash != false) {
     $environment  = "NEWPGPASSWD=${password_hash}"
@@ -68,6 +76,17 @@ define postgresql::server::role(
     unless      => "SELECT rolname FROM pg_roles WHERE rolname='${username}'",
     environment => $environment,
     require     => Class['Postgresql::Server'],
+  }
+
+  # In RDS you can't create superusers and instead use the 'rds_superuser' role,
+  # this grants membership to that role to the user if need-be.
+  # cf. http://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/Appendix.PostgreSQL.CommonDBATasks.html#Appendix.PostgreSQL.CommonDBATasks.Roles
+  if ($rds and $superuser) {
+    postgresql_psql { "GRANT rds_superuser TO ${username};":
+      command     => "GRANT rds_superuser TO \"${username}\"",
+      environment => $environment,
+      require     => Class['Postgresql::Server'],
+    }
   }
 
   postgresql_psql {"ALTER ROLE \"${username}\" ${superuser_sql}":
@@ -113,10 +132,19 @@ define postgresql::server::role(
       $pwd_md5 = md5("${password_hash}${username}")
       $pwd_hash_sql = "md5${pwd_md5}"
     }
-    postgresql_psql { "ALTER ROLE ${username} ENCRYPTED PASSWORD ****":
-      command     => "ALTER ROLE \"${username}\" ${password_sql}",
-      unless      => "SELECT usename FROM pg_shadow WHERE usename='${username}' and passwd='${pwd_hash_sql}'",
-      environment => $environment,
+
+    if $rds {
+      postgresql_psql { "ALTER ROLE ${username} ENCRYPTED PASSWORD ****":
+        command     => "ALTER ROLE \"${username}\" ${password_sql}",
+        unless      => "SELECT usename FROM pg_user WHERE usename='${username}' and passwd='${pwd_hash_sql}'",
+        environment => $environment,
+      }
+    } else {
+      postgresql_psql { "ALTER ROLE ${username} ENCRYPTED PASSWORD ****":
+        command     => "ALTER ROLE \"${username}\" ${password_sql}",
+        unless      => "SELECT usename FROM pg_shadow WHERE usename='${username}' and passwd='${pwd_hash_sql}'",
+        environment => $environment,
+      }
     }
   }
 }
