@@ -85,7 +85,10 @@ define postgresql::server::role(
     postgresql_psql { "GRANT rds_superuser TO ${username};":
       command     => "GRANT rds_superuser TO \"${username}\"",
       environment => $environment,
-      require     => Class['Postgresql::Server'],
+      require     => [
+        Postgresql_psql["CREATE ROLE ${username} ENCRYPTED PASSWORD ****"],
+        Class['Postgresql::Server'],
+      ],
     }
   }
 
